@@ -1,0 +1,32 @@
+FROM --platform=${BUILDPLATFORM:-linux/amd64} golang:1.22.2 as builder
+
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
+ARG GOPROXY
+
+WORKDIR /workspace
+
+COPY . .
+
+RUN GOPROXY=$GOPROXY go mod download
+
+# Build
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-w -s" -o server-app server/main.go
+
+FROM --platform=${TARGETPLATFORM:-linux/amd64} alpine AS certs-builder
+
+# Install ca-certificates package
+RUN apk --update add ca-certificates
+
+FROM --platform=${TARGETPLATFORM:-linux/amd64} scratch
+LABEL description="Simple Server to showcase mTLS"
+
+WORKDIR /
+USER 1001
+COPY --from=builder /workspace/server-app /usr/bin/server-app
+COPY --from=certs-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+
+ENTRYPOINT ["/usr/bin/server-app"]
