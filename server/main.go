@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -93,13 +94,22 @@ func startServer(certFile, keyFile, caFile string, updateCert <-chan bool) *http
 	}
 	caCertPool := x509.NewCertPool()
 	caCertPool.AppendCertsFromPEM(caCertFile)
-
+	result := &keypairReloader{
+		certPath: certFile,
+		keyPath:  keyFile,
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		log.Fatalf(err.Error())
+	}
+	result.cert = &cert
 	// Create the TLS Config with the CA pool and enable Client certificate validation
 	tlsConfig := &tls.Config{
 		ClientCAs:                caCertPool,
 		ClientAuth:               tls.RequireAndVerifyClientCert,
 		MinVersion:               tls.VersionTLS12,
 		CurvePreferences:         []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
+		GetCertificate:           result.GetCertificateFunc(),
 		PreferServerCipherSuites: true,
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
@@ -131,8 +141,10 @@ func startServer(certFile, keyFile, caFile string, updateCert <-chan bool) *http
 					log.Println("Error loading certificate:", err)
 					continue
 				}
-
-				server.TLSConfig.Certificates = []tls.Certificate{cert}
+				result.cert = &cert
+				if err := result.maybeReload(); err != nil {
+					log.Printf("Keeping old TLS certificate because the new one could not be loaded: %v", err)
+				}
 				log.Println("Certificate reloaded successfully.")
 			}
 		}
@@ -163,19 +175,43 @@ func watchForCertificateChanges(certFile, keyFile string, updateCert chan<- bool
 
 	for {
 		select {
-		case event, ok := <-watcher.Events:
+		case _, ok := <-watcher.Events:
 			if !ok {
 				return
 			}
-			if event.Op&fsnotify.Write == fsnotify.Write {
-				log.Println("Ca, Certificate or key file modified. Reloading...")
-				updateCert <- true
-			}
+			log.Println("Ca, Certificate or key file modified. Reloading...")
+			updateCert <- true
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return
 			}
 			log.Println("Error watching for file changes:", err)
 		}
+	}
+}
+
+type keypairReloader struct {
+	certMu   sync.RWMutex
+	cert     *tls.Certificate
+	certPath string
+	keyPath  string
+}
+
+func (kpr *keypairReloader) maybeReload() error {
+	newCert, err := tls.LoadX509KeyPair(kpr.certPath, kpr.keyPath)
+	if err != nil {
+		return err
+	}
+	kpr.certMu.Lock()
+	defer kpr.certMu.Unlock()
+	kpr.cert = &newCert
+	return nil
+}
+
+func (kpr *keypairReloader) GetCertificateFunc() func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		kpr.certMu.RLock()
+		defer kpr.certMu.RUnlock()
+		return kpr.cert, nil
 	}
 }

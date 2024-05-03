@@ -21,57 +21,60 @@ func main() {
 
 	flag.Parse()
 
-	cert, err := os.ReadFile(*tlsCA)
-	if err != nil {
-		log.Fatalf("could not open certificate file: %v", err)
-	}
-	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(cert)
+	for {
+		cert, err := os.ReadFile(*tlsCA)
+		if err != nil {
+			log.Fatalf("could not open certificate file: %v", err)
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(cert)
 
-	log.Println("Load key pairs - ", tlsCert, tlsKey)
-	certificate, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
-	if err != nil {
-		log.Fatalf("could not load certificate: %v", err)
-	}
+		log.Println("Load key pairs - ", tlsCert, tlsKey)
+		certificate, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
+			log.Fatalf("could not load certificate: %v", err)
+		}
 
-	client := http.Client{
-		Timeout: time.Minute * 3,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:               caCertPool,
-				Certificates:          []tls.Certificate{certificate},
-				InsecureSkipVerify:    true,
-				VerifyPeerCertificate: verifyPeerCertificate,
+		client := http.Client{
+			Timeout: time.Minute * 3,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					RootCAs:               caCertPool,
+					Certificates:          []tls.Certificate{certificate},
+					InsecureSkipVerify:    true,
+					VerifyPeerCertificate: verifyPeerCertificate,
+				},
 			},
-		},
-	}
+		}
 
-	// Request /hello over port 8443 via the GET method
-	// Using curl the verfiy it :
-	// curl --trace trace.log -k \
-	//   --cacert ./ca.crt  --cert ./client.b.crt --key ./client.b.key  \
-	//     https://localhost:8443/hello
+		// Request /hello over port 8443 via the GET method
+		// Using curl the verfiy it :
+		// curl --trace trace.log -k \
+		//   --cacert ./ca.crt  --cert ./client.b.crt --key ./client.b.key  \
+		//     https://localhost:8443/hello
 
-	r, err := client.Get(*server)
-	if err != nil {
-		log.Fatalf("error making get request: %v", err)
-	}
+		r, err := client.Get(*server)
+		if err != nil {
+			log.Fatalf("error making get request: %v", err)
+		}
 
-	// Read the response body
-	defer r.Body.Close()
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Fatalf("error reading response: %v", err)
-	}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			log.Fatalf("error reading response: %v", err)
+		}
 
-	// Print the response body to stdout
-	log.Printf("%s\n", body)
+		// Print the response body to stdout
+		log.Printf("%s\n", body)
 
-	// Print the URI SAN of the server certificate
-	for _, cert := range r.TLS.PeerCertificates {
-		log.Println("URI SAN:", cert.URIs)
-		humanReadableTime := cert.NotAfter.Format("Monday, January 2, 2006 15:04:05 MST")
-		log.Printf("Validity: %s", humanReadableTime)
+		// Print the URI SAN of the server certificate
+		for _, cert := range r.TLS.PeerCertificates {
+			log.Println("URI SAN:", cert.URIs)
+			humanReadableTime := cert.NotAfter.Format("Monday, January 2, 2006 15:04:05 MST")
+			log.Printf("Validity: %s", humanReadableTime)
+		}
+
+		r.Body.Close()
+		time.Sleep(15 * time.Second)
 	}
 }
 
