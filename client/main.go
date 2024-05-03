@@ -12,14 +12,23 @@ import (
 	"time"
 )
 
+type uriMatcher struct {
+	uriMatch string
+}
+
 func main() {
 
 	tlsKey := flag.String("k", "/certs/tls.key", "Private key of server")
 	tlsCert := flag.String("p", "/certs/tls.crt", "Public Key of Server")
 	tlsCA := flag.String("c", "/certs/ca.crt", "CA Certificate")
 	server := flag.String("s", "https://localhost:8443/hello", "HTTP Address for Server")
+	uriMatch := flag.String("u", "spiffe://cert-manager-spiffe.mattiasgees.be/ns/mtls-app/sa/server", "SPIFF ID to match")
 
 	flag.Parse()
+
+	uriMatcher := uriMatcher{
+		uriMatch: *uriMatch,
+	}
 
 	for {
 		cert, err := os.ReadFile(*tlsCA)
@@ -42,7 +51,7 @@ func main() {
 					RootCAs:               caCertPool,
 					Certificates:          []tls.Certificate{certificate},
 					InsecureSkipVerify:    true,
-					VerifyPeerCertificate: verifyPeerCertificate,
+					VerifyPeerCertificate: uriMatcher.verifyPeerCertificate,
 				},
 			},
 		}
@@ -78,17 +87,17 @@ func main() {
 	}
 }
 
-func verifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+func (u *uriMatcher) verifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
 	for _, rawCert := range rawCerts {
 		c, _ := x509.ParseCertificate(rawCert)
 		if len(c.URIs) > 0 {
 			for _, uri := range c.URIs {
-				if uri.String() == "spiffe://cert-manager-spiffe.mattiasgees.be/ns/mtls-app/sa/server" {
-					log.Println("Match for URI")
+				if uri.String() == u.uriMatch {
+					log.Printf("Match for URI %s found", u.uriMatch)
 					return nil // Connection verified
 				}
 			}
 		}
 	}
-	return fmt.Errorf("no matching URI SAN found")
+	return fmt.Errorf("no matching URI SAN found for %s", u.uriMatch)
 }
