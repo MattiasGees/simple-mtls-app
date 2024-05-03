@@ -65,11 +65,11 @@ func main() {
 	}
 
 	// Print the response body to stdout
-	fmt.Printf("%s\n", body)
+	log.Printf("%s\n", body)
 
 	// Print the URI SAN of the server certificate
 	for _, cert := range r.TLS.PeerCertificates {
-		fmt.Println("URI SAN:", cert.URIs)
+		log.Println("URI SAN:", cert.URIs)
 		humanReadableTime := cert.NotAfter.Format("Monday, January 2, 2006 15:04:05 MST")
 		log.Printf("Validity: %s", humanReadableTime)
 	}
@@ -80,9 +80,8 @@ func verifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certifica
 		c, _ := x509.ParseCertificate(rawCert)
 		if len(c.URIs) > 0 {
 			for _, uri := range c.URIs {
-				log.Println(uri.String())
 				if uri.String() == "spiffe://cert-manager-spiffe.mattiasgees.be/ns/mtls-app/sa/server" {
-					fmt.Println("Match for URI")
+					log.Println("Match for URI")
 					return nil // Connection verified
 				}
 			}

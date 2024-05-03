@@ -72,14 +72,14 @@ func main() {
 	server := startServer(*tlsCert, *tlsKey, *tlsCA, updateCert)
 
 	go func() {
-		fmt.Print("(HTTPS) Listen on :8443\n")
+		log.Print("(HTTPS) Listen on :8443\n")
 		err := server.ListenAndServeTLS(*tlsCert, *tlsKey)
 		if err != nil {
 			log.Fatalf("(HTTPS) error listening to port: %v", err)
 		}
 	}()
 
-	fmt.Println("Server started on port 8443...")
+	log.Println("Server started on port 8443...")
 
 	// Keep the main goroutine running
 	select {}
@@ -125,15 +125,15 @@ func startServer(certFile, keyFile, caFile string, updateCert <-chan bool) *http
 		for {
 			select {
 			case <-updateCert:
-				fmt.Println("Reloading certificate...")
+				log.Println("Reloading certificate...")
 				cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 				if err != nil {
-					fmt.Println("Error loading certificate:", err)
+					log.Println("Error loading certificate:", err)
 					continue
 				}
 
 				server.TLSConfig.Certificates = []tls.Certificate{cert}
-				fmt.Println("Certificate reloaded successfully.")
+				log.Println("Certificate reloaded successfully.")
 			}
 		}
 	}()
@@ -144,20 +144,20 @@ func startServer(certFile, keyFile, caFile string, updateCert <-chan bool) *http
 func watchForCertificateChanges(certFile, keyFile string, updateCert chan<- bool) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		fmt.Println("Error creating watcher:", err)
+		log.Println("Error creating watcher:", err)
 		return
 	}
 	defer watcher.Close()
 
 	err = watcher.Add(certFile)
 	if err != nil {
-		fmt.Println("Error adding certificate file to watcher:", err)
+		log.Println("Error adding certificate file to watcher:", err)
 		return
 	}
 
 	err = watcher.Add(keyFile)
 	if err != nil {
-		fmt.Println("Error adding key file to watcher:", err)
+		log.Println("Error adding key file to watcher:", err)
 		return
 	}
 
@@ -168,14 +168,14 @@ func watchForCertificateChanges(certFile, keyFile string, updateCert chan<- bool
 				return
 			}
 			if event.Op&fsnotify.Write == fsnotify.Write {
-				fmt.Println("Ca, Certificate or key file modified. Reloading...")
+				log.Println("Ca, Certificate or key file modified. Reloading...")
 				updateCert <- true
 			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return
 			}
-			fmt.Println("Error watching for file changes:", err)
+			log.Println("Error watching for file changes:", err)
 		}
 	}
 }
