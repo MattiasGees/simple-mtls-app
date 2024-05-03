@@ -14,54 +14,28 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-func printHeader(r *http.Request) {
-	log.Print(">>>>>>>>>>>>>>>> Header <<<<<<<<<<<<<<<<")
-	// Loop over header names
-	for name, values := range r.Header {
-		// Loop over all values for the name.
-		for _, value := range values {
-			log.Printf("%v:%v", name, value)
-		}
-	}
+type keypairReloader struct {
+	certMu   sync.RWMutex
+	cert     *tls.Certificate
+	certPath string
+	keyPath  string
 }
 
-func printConnState(state *tls.ConnectionState) {
-	log.Print(">>>>>>>>>>>>>>>> State <<<<<<<<<<<<<<<<")
-
-	log.Printf("Version: %x", state.Version)
-	log.Printf("HandshakeComplete: %t", state.HandshakeComplete)
-	log.Printf("DidResume: %t", state.DidResume)
-	log.Printf("CipherSuite: %x", state.CipherSuite)
-
-	log.Print("Certificate chain:")
-	for i, cert := range state.PeerCertificates {
-		subject := cert.Subject
-		issuer := cert.Issuer
-		log.Printf(" %d s:/C=%v/ST=%v/L=%v/O=%v/OU=%v/CN=%s", i, subject.Country, subject.Province, subject.Locality, subject.Organization, subject.OrganizationalUnit, subject.CommonName)
-		log.Printf("   i:/C=%v/ST=%v/L=%v/O=%v/OU=%v/CN=%s", issuer.Country, issuer.Province, issuer.Locality, issuer.Organization, issuer.OrganizationalUnit, issuer.CommonName)
-		log.Printf("   URI SAN: %s", cert.URIs)
-		humanReadableTime := cert.NotAfter.Format("Monday, January 2, 2006 15:04:05 MST")
-		log.Printf("   Validity: %s", humanReadableTime)
-	}
-}
-
-func helloHandler(w http.ResponseWriter, r *http.Request) {
-	printHeader(r)
-	if r.TLS != nil {
-		printConnState(r.TLS)
-	}
-	log.Print(">>>>>>>>>>>>>>>>> End <<<<<<<<<<<<<<<<<<")
-	fmt.Println("")
-	// Write "Hello, world!" to the response body
-	io.WriteString(w, "Hello, world!\n")
+type uriMatcher struct {
+	uriMatch string
 }
 
 func main() {
 	tlsKey := flag.String("k", "/certs/tls.key", "Private key of server")
 	tlsCert := flag.String("p", "/certs/tls.crt", "Public Key of Server")
 	tlsCA := flag.String("c", "/certs/ca.crt", "CA Certificate")
+	uriMatch := flag.String("u", "spiffe://cert-manager-spiffe.mattiasgees.be/ns/mtls-app/sa/client", "SPIFF ID to match")
 
 	flag.Parse()
+
+	uriMatcher := uriMatcher{
+		uriMatch: *uriMatch,
+	}
 
 	// Create a channel for certificate update events
 	updateCert := make(chan bool)
@@ -70,7 +44,7 @@ func main() {
 	go watchForCertificateChanges(*tlsCert, *tlsKey, updateCert)
 
 	// Start the initial server
-	server := startServer(*tlsCert, *tlsKey, *tlsCA, updateCert)
+	server := startServer(*tlsCert, *tlsKey, *tlsCA, uriMatcher, updateCert)
 
 	go func() {
 		log.Print("(HTTPS) Listen on :8443\n")
@@ -86,7 +60,7 @@ func main() {
 	select {}
 }
 
-func startServer(certFile, keyFile, caFile string, updateCert <-chan bool) *http.Server {
+func startServer(certFile, keyFile, caFile string, uriMatcher uriMatcher, updateCert <-chan bool) *http.Server {
 	// load CA certificate file and add it to list of client CAs
 	caCertFile, err := os.ReadFile(caFile)
 	if err != nil {
@@ -110,6 +84,7 @@ func startServer(certFile, keyFile, caFile string, updateCert <-chan bool) *http
 		MinVersion:               tls.VersionTLS12,
 		CurvePreferences:         []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
 		GetCertificate:           result.GetCertificateFunc(),
+		VerifyPeerCertificate:    uriMatcher.verifyPeerCertificate,
 		PreferServerCipherSuites: true,
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
@@ -190,11 +165,46 @@ func watchForCertificateChanges(certFile, keyFile string, updateCert chan<- bool
 	}
 }
 
-type keypairReloader struct {
-	certMu   sync.RWMutex
-	cert     *tls.Certificate
-	certPath string
-	keyPath  string
+func printHeader(r *http.Request) {
+	log.Print(">>>>>>>>>>>>>>>> Header <<<<<<<<<<<<<<<<")
+	// Loop over header names
+	for name, values := range r.Header {
+		// Loop over all values for the name.
+		for _, value := range values {
+			log.Printf("%v:%v", name, value)
+		}
+	}
+}
+
+func printConnState(state *tls.ConnectionState) {
+	log.Print(">>>>>>>>>>>>>>>> State <<<<<<<<<<<<<<<<")
+
+	log.Printf("Version: %x", state.Version)
+	log.Printf("HandshakeComplete: %t", state.HandshakeComplete)
+	log.Printf("DidResume: %t", state.DidResume)
+	log.Printf("CipherSuite: %x", state.CipherSuite)
+
+	log.Print("Certificate chain:")
+	for i, cert := range state.PeerCertificates {
+		subject := cert.Subject
+		issuer := cert.Issuer
+		log.Printf(" %d s:/C=%v/ST=%v/L=%v/O=%v/OU=%v/CN=%s", i, subject.Country, subject.Province, subject.Locality, subject.Organization, subject.OrganizationalUnit, subject.CommonName)
+		log.Printf("   i:/C=%v/ST=%v/L=%v/O=%v/OU=%v/CN=%s", issuer.Country, issuer.Province, issuer.Locality, issuer.Organization, issuer.OrganizationalUnit, issuer.CommonName)
+		log.Printf("   URI SAN: %s", cert.URIs)
+		humanReadableTime := cert.NotAfter.Format("Monday, January 2, 2006 15:04:05 MST")
+		log.Printf("   Validity: %s", humanReadableTime)
+	}
+}
+
+func helloHandler(w http.ResponseWriter, r *http.Request) {
+	printHeader(r)
+	if r.TLS != nil {
+		printConnState(r.TLS)
+	}
+	log.Print(">>>>>>>>>>>>>>>>> End <<<<<<<<<<<<<<<<<<")
+	fmt.Println("")
+	// Write "Hello, world!" to the response body
+	io.WriteString(w, "Hello, world!\n")
 }
 
 func (kpr *keypairReloader) maybeReload() error {
@@ -214,4 +224,19 @@ func (kpr *keypairReloader) GetCertificateFunc() func(*tls.ClientHelloInfo) (*tl
 		defer kpr.certMu.RUnlock()
 		return kpr.cert, nil
 	}
+}
+
+func (u *uriMatcher) verifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	for _, rawCert := range rawCerts {
+		c, _ := x509.ParseCertificate(rawCert)
+		if len(c.URIs) > 0 {
+			for _, uri := range c.URIs {
+				if uri.String() == u.uriMatch {
+					log.Printf("Match for URI %s found", u.uriMatch)
+					return nil // Connection verified
+				}
+			}
+		}
+	}
+	return fmt.Errorf("no matching URI SAN found for %s", u.uriMatch)
 }
