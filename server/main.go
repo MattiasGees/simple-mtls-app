@@ -234,6 +234,8 @@ func (u *uriMatcher) verifyPeerCertificate(rawCerts [][]byte, verifiedChains [][
 				if uri.String() == u.uriMatch {
 					log.Printf("Match for URI %s found", u.uriMatch)
 					return nil // Connection verified
+				} else {
+					log.Printf("Doesn't match for %s", uri.String())
 				}
 			}
 		}
