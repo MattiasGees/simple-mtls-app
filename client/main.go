@@ -22,7 +22,7 @@ func main() {
 	tlsCert := flag.String("p", "/certs/tls.crt", "Public Key of Server")
 	tlsCA := flag.String("c", "/certs/ca.crt", "CA Certificate")
 	server := flag.String("s", "https://localhost:8443/hello", "HTTP Address for Server")
-	uriMatch := flag.String("u", "spiffe://cert-manager-spiffe.mattiasgees.be/ns/mtls-app/sa/server", "SPIFF ID to match")
+	uriMatch := flag.String("u", "spiffe://cert-manager-spiffe.mattiasgees.be/ns/mtls-app/sa/server", "SPIFFE ID to match")
 
 	flag.Parse()
 
