@@ -72,18 +72,48 @@ func main() {
 			log.Fatalf("error reading response: %v", err)
 		}
 
-		// Print the response body to stdout
+		// Print the response body, header and state to stdout
+		log.Print(">>>>>>>>>>>>>>>> Body <<<<<<<<<<<<<<<<")
 		log.Printf("%s\n", body)
-
-		// Print the URI SAN of the server certificate
-		for _, cert := range r.TLS.PeerCertificates {
-			log.Println("URI SAN:", cert.URIs)
-			humanReadableTime := cert.NotAfter.Format("Monday, January 2, 2006 15:04:05 MST")
-			log.Printf("Validity: %s", humanReadableTime)
+		printHeader(r)
+		if r.TLS != nil {
+			printConnState(r.TLS)
 		}
-
+		log.Print(">>>>>>>>>>>>>>>>> End <<<<<<<<<<<<<<<<<<")
+		fmt.Println("")
 		r.Body.Close()
 		time.Sleep(15 * time.Second)
+	}
+}
+
+func printConnState(state *tls.ConnectionState) {
+	log.Print(">>>>>>>>>>>>>>>> State <<<<<<<<<<<<<<<<")
+
+	log.Printf("Version: %x", state.Version)
+	log.Printf("HandshakeComplete: %t", state.HandshakeComplete)
+	log.Printf("DidResume: %t", state.DidResume)
+	log.Printf("CipherSuite: %x", state.CipherSuite)
+
+	log.Print("Certificate chain:")
+	for i, cert := range state.PeerCertificates {
+		subject := cert.Subject
+		issuer := cert.Issuer
+		log.Printf(" %d s:/C=%v/ST=%v/L=%v/O=%v/OU=%v/CN=%s", i, subject.Country, subject.Province, subject.Locality, subject.Organization, subject.OrganizationalUnit, subject.CommonName)
+		log.Printf("   i:/C=%v/ST=%v/L=%v/O=%v/OU=%v/CN=%s", issuer.Country, issuer.Province, issuer.Locality, issuer.Organization, issuer.OrganizationalUnit, issuer.CommonName)
+		log.Printf("   URI SAN: %s", cert.URIs)
+		humanReadableTime := cert.NotAfter.Format("Monday, January 2, 2006 15:04:05 MST")
+		log.Printf("   Validity: %s", humanReadableTime)
+	}
+}
+
+func printHeader(r *http.Response) {
+	log.Print(">>>>>>>>>>>>>>>> Header <<<<<<<<<<<<<<<<")
+	// Loop over header names
+	for name, values := range r.Header {
+		// Loop over all values for the name.
+		for _, value := range values {
+			log.Printf("%v:%v", name, value)
+		}
 	}
 }
 
