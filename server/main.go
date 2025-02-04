@@ -2,166 +2,71 @@ package main
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"sync"
+	"time"
 
-	"github.com/fsnotify/fsnotify"
+	"github.com/dyson/certman"
+	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
+	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
 )
-
-type keypairReloader struct {
-	certMu   sync.RWMutex
-	cert     *tls.Certificate
-	certPath string
-	keyPath  string
-}
-
-type uriMatcher struct {
-	uriMatch string
-}
 
 func main() {
 	tlsKey := flag.String("k", "/certs/tls.key", "Private key of server")
 	tlsCert := flag.String("p", "/certs/tls.crt", "Public Key of Server")
 	tlsCA := flag.String("c", "/certs/ca.crt", "CA Certificate")
+	trustDomain := flag.String("t", "cert-manager-spiffe.mattiasgees.be", "Trust Domain")
 	uriMatch := flag.String("u", "spiffe://cert-manager-spiffe.mattiasgees.be/ns/mtls-app/sa/client", "SPIFFE ID to match")
 
 	flag.Parse()
 
-	uriMatcher := uriMatcher{
-		uriMatch: *uriMatch,
-	}
+	logger := log.New(os.Stdout, "", log.LstdFlags)
 
-	// Create a channel for certificate update events
-	updateCert := make(chan bool)
-
-	// Start watching for certificate changes
-	go watchForCertificateChanges(*tlsCert, *tlsKey, updateCert)
-
-	// Start the initial server
-	server := startServer(*tlsCert, *tlsKey, *tlsCA, uriMatcher, updateCert)
-
-	go func() {
-		log.Print("(HTTPS) Listen on :8443\n")
-		err := server.ListenAndServeTLS(*tlsCert, *tlsKey)
-		if err != nil {
-			log.Fatalf("(HTTPS) error listening to port: %v", err)
-		}
-	}()
-
-	log.Println("Server started on port 8443...")
-
-	// Keep the main goroutine running
-	select {}
-}
-
-func startServer(certFile, keyFile, caFile string, uriMatcher uriMatcher, updateCert <-chan bool) *http.Server {
-	// load CA certificate file and add it to list of client CAs
-	caCertFile, err := os.ReadFile(caFile)
+	cm, err := certman.New(*tlsCert, *tlsKey)
 	if err != nil {
-		log.Fatalf("error reading CA certificate: %v", err)
+		logger.Println(err)
 	}
-	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(caCertFile)
-	result := &keypairReloader{
-		certPath: certFile,
-		keyPath:  keyFile,
+	cm.Logger(logger)
+	if err := cm.Watch(); err != nil {
+		logger.Println(err)
 	}
-	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+
+	// Load the SVID from disk
+	svid, err := x509svid.Load(*tlsCert, *tlsKey)
 	if err != nil {
-		log.Fatalf(err.Error())
-	}
-	result.cert = &cert
-	// Create the TLS Config with the CA pool and enable Client certificate validation
-	tlsConfig := &tls.Config{
-		ClientCAs:                caCertPool,
-		ClientAuth:               tls.RequireAndVerifyClientCert,
-		MinVersion:               tls.VersionTLS12,
-		CurvePreferences:         []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
-		GetCertificate:           result.GetCertificateFunc(),
-		VerifyPeerCertificate:    uriMatcher.verifyPeerCertificate,
-		PreferServerCipherSuites: true,
-		CipherSuites: []uint16{
-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-			tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_RSA_WITH_AES_256_CBC_SHA,
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-		},
+		log.Fatalf("Failed to load SVID: %v", err)
 	}
 
-	// Set up a /hello resource handler
-	handler := http.NewServeMux()
-	handler.HandleFunc("/hello", helloHandler)
+	td := spiffeid.RequireTrustDomainFromString(*trustDomain)
+	bundle, err := x509bundle.Load(td, *tlsCA)
+	if err != nil {
+		log.Fatalf("Failed to load bundle: %v", err)
+	}
 
+	// Allowed SPIFFE ID
+	clientID := spiffeid.RequireFromString(*uriMatch)
+
+	// Set up a `/hello` resource handler
+	http.HandleFunc("/hello", helloHandler)
+
+	// Create a `tls.Config` to allow mTLS connections, and verify that presented certificate has SPIFFE ID `spiffe://example.org/client`
+	tlsConfig := tlsconfig.MTLSServerConfig(svid, bundle, tlsconfig.AuthorizeID(clientID))
+	tlsConfig.GetCertificate = cm.GetCertificate
 	server := &http.Server{
-		Addr:      ":8443",
-		Handler:   handler,
-		TLSConfig: tlsConfig,
+		Addr:              ":8443",
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: time.Second * 10,
 	}
 
-	go func() {
-		for {
-			select {
-			case <-updateCert:
-				log.Println("Reloading certificate...")
-				cert, err := tls.LoadX509KeyPair(certFile, keyFile)
-				if err != nil {
-					log.Println("Error loading certificate:", err)
-					continue
-				}
-				result.cert = &cert
-				if err := result.maybeReload(); err != nil {
-					log.Printf("Keeping old TLS certificate because the new one could not be loaded: %v", err)
-				}
-				log.Println("Certificate reloaded successfully.")
-			}
-		}
-	}()
-
-	return server
-}
-
-func watchForCertificateChanges(certFile, keyFile string, updateCert chan<- bool) {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		log.Println("Error creating watcher:", err)
-		return
-	}
-	defer watcher.Close()
-
-	err = watcher.Add(certFile)
-	if err != nil {
-		log.Println("Error adding certificate file to watcher:", err)
-		return
-	}
-
-	err = watcher.Add(keyFile)
-	if err != nil {
-		log.Println("Error adding key file to watcher:", err)
-		return
-	}
-
-	for {
-		select {
-		case _, ok := <-watcher.Events:
-			if !ok {
-				return
-			}
-			log.Println("Ca, Certificate or key file modified. Reloading...")
-			updateCert <- true
-		case err, ok := <-watcher.Errors:
-			if !ok {
-				return
-			}
-			log.Println("Error watching for file changes:", err)
-		}
+	// Serve the SPIFFE mTLS server.
+	if err := server.ListenAndServeTLS("", ""); err != nil {
+		log.Fatalf("failed to serve: %w", err)
 	}
 }
 
@@ -205,40 +110,4 @@ func helloHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("")
 	// Write "Hello, world!" to the response body
 	io.WriteString(w, "Hello, world!\n")
-}
-
-func (kpr *keypairReloader) maybeReload() error {
-	newCert, err := tls.LoadX509KeyPair(kpr.certPath, kpr.keyPath)
-	if err != nil {
-		return err
-	}
-	kpr.certMu.Lock()
-	defer kpr.certMu.Unlock()
-	kpr.cert = &newCert
-	return nil
-}
-
-func (kpr *keypairReloader) GetCertificateFunc() func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
-	return func(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-		kpr.certMu.RLock()
-		defer kpr.certMu.RUnlock()
-		return kpr.cert, nil
-	}
-}
-
-func (u *uriMatcher) verifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-	for _, rawCert := range rawCerts {
-		c, _ := x509.ParseCertificate(rawCert)
-		if len(c.URIs) > 0 {
-			for _, uri := range c.URIs {
-				if uri.String() == u.uriMatch {
-					log.Printf("Match for URI %s found", u.uriMatch)
-					return nil // Connection verified
-				} else {
-					log.Printf("Doesn't match for %s", uri.String())
-				}
-			}
-		}
-	}
-	return fmt.Errorf("no matching URI SAN found for %s", u.uriMatch)
 }
