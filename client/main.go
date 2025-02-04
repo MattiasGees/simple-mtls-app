@@ -2,62 +2,56 @@ package main
 
 import (
 	"crypto/tls"
-	"crypto/x509"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"time"
-)
 
-type uriMatcher struct {
-	uriMatch string
-}
+	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
+	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
+	"github.com/spiffe/go-spiffe/v2/svid/x509svid"
+)
 
 func main() {
 
 	tlsKey := flag.String("k", "/certs/tls.key", "Private key of server")
 	tlsCert := flag.String("p", "/certs/tls.crt", "Public Key of Server")
 	tlsCA := flag.String("c", "/certs/ca.crt", "CA Certificate")
+	trustDomain := flag.String("t", "cert-manager-spiffe.mattiasgees.be", "Trust Domain")
 	server := flag.String("s", "https://localhost:8443/hello", "HTTP Address for Server")
 	uriMatch := flag.String("u", "spiffe://cert-manager-spiffe.mattiasgees.be/ns/mtls-app/sa/server", "SPIFFE ID to match")
 
 	flag.Parse()
 
-	uriMatcher := uriMatcher{
-		uriMatch: *uriMatch,
-	}
-
 	for {
-		cert, err := os.ReadFile(*tlsCA)
+		// Load the SVID from disk
+		svid, err := x509svid.Load(*tlsCert, *tlsKey)
 		if err != nil {
-			log.Fatalf("could not open certificate file: %v", err)
-		}
-		caCertPool := x509.NewCertPool()
-		caCertPool.AppendCertsFromPEM(cert)
-
-		log.Println("Load key pairs - ", tlsCert, tlsKey)
-		certificate, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
-		if err != nil {
-			log.Fatalf("could not load certificate: %v", err)
+			log.Fatalf("Failed to load SVID: %v", err)
 		}
 
-		client := http.Client{
-			Timeout: time.Minute * 3,
+		td := spiffeid.RequireTrustDomainFromString(*trustDomain)
+		bundle, err := x509bundle.Load(td, *tlsCA)
+		if err != nil {
+			log.Fatalf("Failed to load bundle: %v", err)
+		}
+
+		// Allowed SPIFFE ID
+		serverID := spiffeid.RequireFromString(*uriMatch)
+
+		// Create a `tls.Config` to allow mTLS connections, and verify that presented certificate has SPIFFE ID.
+		tlsConfig := tlsconfig.MTLSClientConfig(svid, bundle, tlsconfig.AuthorizeID(serverID))
+		client := &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					RootCAs:               caCertPool,
-					Certificates:          []tls.Certificate{certificate},
-					InsecureSkipVerify:    true,
-					VerifyPeerCertificate: uriMatcher.verifyPeerCertificate,
-				},
+				TLSClientConfig: tlsConfig,
 			},
 		}
 
 		// Request /hello over port 8443 via the GET method
-		// Using curl the verfiy it :
+		// Using curl the verify it :
 		// curl --trace trace.log -k \
 		//   --cacert ./ca.crt  --cert ./client.b.crt --key ./client.b.key  \
 		//     https://localhost:8443/hello
@@ -115,21 +109,4 @@ func printHeader(r *http.Response) {
 			log.Printf("%v:%v", name, value)
 		}
 	}
-}
-
-func (u *uriMatcher) verifyPeerCertificate(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
-	for _, rawCert := range rawCerts {
-		c, _ := x509.ParseCertificate(rawCert)
-		if len(c.URIs) > 0 {
-			for _, uri := range c.URIs {
-				if uri.String() == u.uriMatch {
-					log.Printf("Match for URI %s found", u.uriMatch)
-					return nil // Connection verified
-				} else {
-					log.Printf("Doesn't match for %s", uri.String())
-				}
-			}
-		}
-	}
-	return fmt.Errorf("no matching URI SAN found for %s", u.uriMatch)
 }
